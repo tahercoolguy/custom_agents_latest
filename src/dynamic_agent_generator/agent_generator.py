@@ -2,6 +2,11 @@ from pathlib import Path
 import os
 from typing import List, Optional, Dict
 from smolagents import CodeAgent, HfApiModel, Tool
+import logging
+
+# Set up logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 class AgentCreationTool(Tool):
     """Tool for creating new agents."""
@@ -85,7 +90,7 @@ class {tool_spec['name'].title()}Tool(Tool):
 
         # Create agent.py
         agent_code = f"""
-from smolagents import CodeAgent, HfApiModel
+from smolagents import CodeAgent, HfApiModel, Tool
 from .tools import *
 from typing import Any, List
 
@@ -94,25 +99,28 @@ class {agent_name}(CodeAgent):
     {description}
     \"\"\"
     
-    def __init__(self, model_id: str = "Qwen/Qwen2.5-Coder-32B-Instruct", **kwargs):
+    def __init__(
+        self,
+        model_id: str = "Qwen/Qwen2.5-Coder-32B-Instruct",
+        **kwargs
+    ):
+        # Initialize tools
         tools = [
             {', '.join(f"{t['name'].title()}Tool()" for t in tool_specs)}
         ]
+        
+        # Initialize model
+        model = HfApiModel(model_id=model_id)
+        
         super().__init__(
             tools=tools,
-            model=HfApiModel(model_id=model_id),
-            description=self.__doc__,
+            model=model,
             **kwargs
         )
-
-    def run(self, query: str, **kwargs) -> str:
-        \"\"\"Process the user query using available tools.\"\"\"
-        messages = [
-            {{"role": "system", "content": self.description}},
-            {{"role": "user", "content": query}}
-        ]
-        response = self.model(messages)
-        return response.content if hasattr(response, 'content') else str(response)
+    
+    def process_request(self, request: str) -> str:
+        \"\"\"Process a user request using CodeAgent's run method.\"\"\"
+        return self.run(request)
 """
         
         with open(agent_dir / "agent.py", "w") as f:
@@ -151,6 +159,8 @@ class ToolGenerationTool(Tool):
 
     def forward(self, description: str) -> List[Dict]:
         """Generate tool specifications based on description."""
+        logger.info(f"Starting tool generation for description: {description}")
+        
         messages = [
             {
                 "role": "system", 
@@ -181,27 +191,37 @@ Example format:
         last_error = None
         
         for attempt in range(max_retries):
+            logger.info(f"Attempt {attempt + 1}/{max_retries}")
             try:
+                logger.info("Getting response from model...")
                 response = self.model(messages)
+                logger.debug(f"Raw model response: {response.content}")
+                
+                logger.info("Evaluating response...")
                 tool_specs = eval(response.content)
                 
                 # Validate response format
+                logger.info("Validating response format...")
                 if not isinstance(tool_specs, list):
                     raise ValueError("Response must be a list")
                 
                 required_keys = {'name', 'description', 'inputs', 'output_type', 'implementation'}
-                for tool in tool_specs:
+                for i, tool in enumerate(tool_specs):
+                    logger.info(f"Validating tool {i + 1}/{len(tool_specs)}")
                     if not isinstance(tool, dict):
-                        raise ValueError("Each tool must be a dictionary")
+                        raise ValueError(f"Tool {i + 1} must be a dictionary")
                     if not all(key in tool for key in required_keys):
-                        raise ValueError(f"Tool missing required keys. Must have: {required_keys}")
+                        missing_keys = required_keys - set(tool.keys())
+                        raise ValueError(f"Tool {i + 1} missing required keys: {missing_keys}")
                 
+                logger.info(f"Successfully generated {len(tool_specs)} tools")
                 return tool_specs
                 
             except Exception as e:
                 last_error = e
+                logger.error(f"Attempt {attempt + 1} failed with error: {str(e)}")
                 if attempt < max_retries - 1:
-                    # Add error context to the next attempt
+                    logger.info("Adding error context for next attempt...")
                     messages.append({
                         "role": "user",
                         "content": f"""Previous attempt failed with error: {str(e)}
@@ -210,7 +230,9 @@ Example format:
                     })
                 continue
         
-        print(f"Failed to generate tools after {max_retries} attempts. Last error: {last_error}")
+        logger.warning(f"Failed to generate tools after {max_retries} attempts. Last error: {last_error}")
+        logger.info("Using fallback calculator tool")
+        
         # Fallback to basic calculator tool if all retries fail
         return [{
             "name": "calculator",
@@ -245,38 +267,27 @@ class DynamicAgentGenerator(CodeAgent):
         model = HfApiModel(model_id=model_id)
         
         # Initialize tools with the model
-        self.agent_creator = AgentCreationTool(model=model)
-        self.tool_generator = ToolGenerationTool(model=model)
-        
-        # Set up tool references
-        self.agent_creator.tool_generator = self.tool_generator
+        tools = [
+            AgentCreationTool(model=model),
+            ToolGenerationTool(model=model)
+        ]
         
         super().__init__(
-            tools=[self.agent_creator, self.tool_generator],
+            tools=tools,
             model=model,
             **kwargs
         )
         self.output_dir = output_dir or os.getcwd()
 
-    def create_agent(
-        self,
-        description: str,
-        save_path: str,
-        agent_name: Optional[str] = None
-    ) -> str:
-        """Create a new agent using the tools."""
-        # First, generate the tools needed for the agent
-        tool_specs = self.tool_generator(description=description)
+    def create_agent(self, description: str, save_path: str = None) -> str:
+        """Create a new agent using CodeAgent's run method."""
+        if save_path is None:
+            save_path = self.output_dir
+            
+        prompt = f"""Create an agent with these requirements: {description}
+        The agent should be saved to: {save_path}
         
-        # Then create the agent with the generated tools
-        agent_path = self.agent_creator(
-            description=description,
-            save_path=save_path,
-            agent_name=agent_name
-        )
+        First use tool_generator to create the tools, then use agent_creator to create the agent with those tools.
+        """
         
-        return agent_path
-
-    def run(self, **kwargs) -> str:
-        """Run the agent generator with the given inputs."""
-        return self.create_agent(**kwargs) 
+        return self.run(prompt) 
