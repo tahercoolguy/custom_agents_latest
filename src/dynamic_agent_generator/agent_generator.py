@@ -27,6 +27,11 @@ class DynamicAgentGenerator(CodeAgent):
         )
         self.output_dir = output_dir or os.getcwd()
 
+    def _get_completion(self, prompt: str) -> str:
+        """Helper method to get completion from the model."""
+        response = self.model(prompt)
+        return response.strip()
+
     def _determine_required_tools(self, description: str) -> List[Dict]:
         """Use LLM to determine required tools based on agent description."""
         prompt = f"""Based on the following agent description, determine the necessary tools needed.
@@ -45,7 +50,7 @@ class DynamicAgentGenerator(CodeAgent):
         ]
         """
         
-        response = self.model.generate(prompt)
+        response = self._get_completion(prompt)
         try:
             # Safely evaluate the response to get the list of tools
             tools = eval(response)
@@ -74,7 +79,7 @@ class DynamicAgentGenerator(CodeAgent):
         # Generate agent name if not provided
         if agent_name is None:
             prompt = f"Generate a concise camelCase name for an agent that: {description}"
-            agent_name = self.model.generate(prompt).strip()
+            agent_name = self._get_completion(prompt)
             if not agent_name.isidentifier():
                 agent_name = "CustomAgent"
         
