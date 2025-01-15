@@ -34,7 +34,8 @@ class DynamicAgentGenerator(CodeAgent):
             {"role": "user", "content": prompt}
         ]
         response = self.model(messages)
-        return response.strip()
+        # Extract content from ChatCompletionOutputMessage
+        return response.content.strip() if hasattr(response, 'content') else str(response).strip()
 
     def _determine_required_tools(self, description: str) -> List[Dict]:
         """Use LLM to determine required tools based on agent description."""
