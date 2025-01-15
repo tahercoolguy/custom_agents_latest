@@ -146,23 +146,91 @@ class ToolGenerationTool(Tool):
     output_type = "object"
 
     def __init__(self, model=None, **kwargs):
-        self.model = model  # Set model before super().__init__
+        self.model = model
         super().__init__(**kwargs)
 
     def forward(self, description: str) -> List[Dict]:
         """Generate tool specifications based on description."""
         messages = [
-            {"role": "system", "content": "You are an AI that creates tool specifications for agents."},
-            {"role": "user", "content": f"""
-Create tool specifications for an agent that: {description}
-Include the actual Python implementation code for each tool.
-Return a list of dictionaries with 'name', 'description', 'inputs', 'output_type', and 'implementation'.
-            """}
+            {
+                "role": "system", 
+                "content": """You are an AI that creates tool specifications for agents.
+                You must respond with only a Python list of dictionaries.
+                Each dictionary must have these exact keys: 'name', 'description', 'inputs', 'output_type', and 'implementation'.
+                The response must be valid Python code that can be evaluated with eval().
+                Do not include any explanatory text, just the Python list."""
+            },
+            {
+                "role": "user",
+                "content": f"""Create tools for an agent that: {description}
+
+Example format:
+[
+    {{
+        "name": "example_tool",
+        "description": "What this tool does",
+        "inputs": {{"input_name": {{"type": "string", "description": "what this input does"}}}},
+        "output_type": "string",
+        "implementation": "# Python code here\\nreturn processed_result"
+    }}
+]"""
+            }
         ]
         
-        response = self.model(messages)
-        tool_specs = eval(response.content)
-        return tool_specs
+        max_retries = 3
+        last_error = None
+        
+        for attempt in range(max_retries):
+            try:
+                response = self.model(messages)
+                tool_specs = eval(response.content)
+                
+                # Validate response format
+                if not isinstance(tool_specs, list):
+                    raise ValueError("Response must be a list")
+                
+                required_keys = {'name', 'description', 'inputs', 'output_type', 'implementation'}
+                for tool in tool_specs:
+                    if not isinstance(tool, dict):
+                        raise ValueError("Each tool must be a dictionary")
+                    if not all(key in tool for key in required_keys):
+                        raise ValueError(f"Tool missing required keys. Must have: {required_keys}")
+                
+                return tool_specs
+                
+            except Exception as e:
+                last_error = e
+                if attempt < max_retries - 1:
+                    # Add error context to the next attempt
+                    messages.append({
+                        "role": "user",
+                        "content": f"""Previous attempt failed with error: {str(e)}
+                        Please try again and ensure you return a valid Python list of tool specifications.
+                        Remember to only return the Python list, no other text."""
+                    })
+                continue
+        
+        print(f"Failed to generate tools after {max_retries} attempts. Last error: {last_error}")
+        # Fallback to basic calculator tool if all retries fail
+        return [{
+            "name": "calculator",
+            "description": "Performs basic mathematical calculations",
+            "inputs": {
+                "expression": {
+                    "type": "string",
+                    "description": "Mathematical expression to evaluate"
+                }
+            },
+            "output_type": "string",
+            "implementation": """
+                try:
+                    # Safely evaluate the mathematical expression
+                    result = eval(kwargs['expression'], {"__builtins__": {}}, {})
+                    return str(result)
+                except Exception as e:
+                    return f"Error: {str(e)}"
+            """
+        }]
 
 class DynamicAgentGenerator(CodeAgent):
     """An agent that generates new smolagents agents based on user requirements."""
