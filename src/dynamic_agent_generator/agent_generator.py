@@ -27,36 +27,59 @@ class DynamicAgentGenerator(CodeAgent):
         )
         self.output_dir = output_dir or os.getcwd()
 
-    def _validate_tool_spec(self, tool_spec: Dict) -> None:
-        """Validate tool specification."""
-        required_fields = ["name", "description", "inputs", "output_type"]
-        for field in required_fields:
-            if field not in tool_spec:
-                raise ValueError(f"Tool specification missing required field: {field}")
+    def _determine_required_tools(self, description: str) -> List[Dict]:
+        """Use LLM to determine required tools based on agent description."""
+        prompt = f"""Based on the following agent description, determine the necessary tools needed.
+        Return the tools as a Python list of dictionaries with 'name', 'description', 'inputs', and 'output_type'.
         
-        if not isinstance(tool_spec["inputs"], dict):
-            raise ValueError("Tool inputs must be a dictionary")
+        Agent Description: {description}
+        
+        Example format:
+        [
+            {{
+                "name": "tool_name",
+                "description": "what the tool does",
+                "inputs": {{"param_name": {{"type": "type", "description": "param description"}}}},
+                "output_type": "return_type"
+            }}
+        ]
+        """
+        
+        response = self.model.generate(prompt)
+        try:
+            # Safely evaluate the response to get the list of tools
+            tools = eval(response)
+            if not isinstance(tools, list):
+                raise ValueError("Response must be a list of tool specifications")
+            return tools
+        except Exception as e:
+            raise ValueError(f"Failed to parse LLM response: {e}")
 
     def create_agent(
         self,
-        agent_name: str,
         description: str,
-        required_tools: List[Dict],
-        save_path: str
+        save_path: str,
+        agent_name: Optional[str] = None
     ) -> str:
-        """Create a new agent with specified tools and capabilities.
+        """Create a new agent based on natural language description.
         
         Args:
-            agent_name: Name of the agent to create
-            description: Description of what the agent should do
-            required_tools: List of tool specifications
+            description: Natural language description of what the agent should do
             save_path: Where to save the generated agent
+            agent_name: Optional name for the agent (will be generated if not provided)
             
         Returns:
             Path to the generated agent
         """
-        if not agent_name.isidentifier():
-            raise ValueError("Agent name must be a valid Python identifier")
+        # Generate agent name if not provided
+        if agent_name is None:
+            prompt = f"Generate a concise camelCase name for an agent that: {description}"
+            agent_name = self.model.generate(prompt).strip()
+            if not agent_name.isidentifier():
+                agent_name = "CustomAgent"
+        
+        # Determine required tools using LLM
+        required_tools = self._determine_required_tools(description)
         
         # Create output directory
         agent_dir = Path(save_path) / agent_name
@@ -111,15 +134,16 @@ class DynamicAgentGenerator(CodeAgent):
             
         return str(agent_dir)
 
-    def improve_agent(self, agent_path: str, feedback: str) -> str:
-        """Improve an existing agent based on feedback.
+    def _validate_tool_spec(self, tool_spec: Dict) -> None:
+        """Validate tool specification."""
+        required_fields = ["name", "description", "inputs", "output_type"]
+        for field in required_fields:
+            if field not in tool_spec:
+                raise ValueError(f"Tool specification missing required field: {field}")
         
-        Args:
-            agent_path: Path to the agent to improve
-            feedback: Feedback on what to improve
-            
-        Returns:
-            Path to the improved agent
-        """
-        # TODO: Implement agent improvement logic
+        if not isinstance(tool_spec["inputs"], dict):
+            raise ValueError("Tool inputs must be a dictionary")
+
+    def improve_agent(self, agent_path: str, feedback: str) -> str:
+        """Improve an existing agent based on feedback."""
         raise NotImplementedError("Agent improvement not yet implemented") 
