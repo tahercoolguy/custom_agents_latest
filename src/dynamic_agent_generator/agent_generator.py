@@ -2,7 +2,157 @@ from pathlib import Path
 import os
 from typing import List, Optional, Dict
 from smolagents import CodeAgent, HfApiModel, Tool
-from .utils.code_generator import generate_tool_code, generate_agent_code
+
+class AgentCreationTool(Tool):
+    """Tool for creating new agents."""
+    
+    name = "agent_creator"
+    description = "Creates a new agent based on specifications"
+    inputs = {
+        "description": {
+            "type": "string",
+            "description": "Natural language description of the agent to create"
+        },
+        "save_path": {
+            "type": "string",
+            "description": "Directory where the agent should be saved"
+        },
+        "agent_name": {
+            "type": "string",
+            "description": "Optional name for the agent"
+        }
+    }
+    output_type = "string"
+
+    def _create_agent(self, description: str, save_path: str, agent_name: Optional[str] = None) -> str:
+        # Generate agent name if not provided
+        if agent_name is None:
+            messages = [
+                {"role": "system", "content": "Generate a camelCase name for an agent."},
+                {"role": "user", "content": f"Agent description: {description}"}
+            ]
+            agent_name = self.model(messages).content.strip()
+            if not agent_name.isidentifier():
+                agent_name = "CustomAgent"
+
+        # Create directory structure
+        agent_dir = Path(save_path) / agent_name
+        agent_dir.mkdir(parents=True, exist_ok=True)
+        
+        tools_dir = agent_dir / "tools"
+        tools_dir.mkdir(exist_ok=True)
+
+        # Generate tools with implementations
+        tool_specs = self.tool_generator(description=description)
+        
+        # Create tool files
+        tool_paths = []
+        for tool_spec in tool_specs:
+            tool_code = f"""
+from smolagents import Tool
+from typing import Any, Dict
+
+class {tool_spec['name'].title()}Tool(Tool):
+    \"\"\"
+    {tool_spec['description']}
+    \"\"\"
+    
+    name = "{tool_spec['name']}"
+    description = "{tool_spec['description']}"
+    inputs = {tool_spec['inputs']}
+    output_type = "{tool_spec['output_type']}"
+    
+    def forward(self, **kwargs) -> Any:
+        {tool_spec['implementation']}
+"""
+            
+            tool_path = tools_dir / f"{tool_spec['name']}.py"
+            tool_paths.append(tool_path)
+            
+            with open(tool_path, "w") as f:
+                f.write(tool_code)
+
+        # Create tools/__init__.py
+        with open(tools_dir / "__init__.py", "w") as f:
+            for tool_spec in tool_specs:
+                f.write(f"from .{tool_spec['name']} import {tool_spec['name'].title()}Tool\n")
+
+        # Create agent.py
+        agent_code = f"""
+from smolagents import CodeAgent, HfApiModel
+from .tools import *
+from typing import Any, List
+
+class {agent_name}(CodeAgent):
+    \"\"\"
+    {description}
+    \"\"\"
+    
+    def __init__(self, model_id: str = "Qwen/Qwen2.5-Coder-32B-Instruct", **kwargs):
+        tools = [
+            {', '.join(f"{t['name'].title()}Tool()" for t in tool_specs)}
+        ]
+        super().__init__(
+            tools=tools,
+            model=HfApiModel(model_id=model_id),
+            description=self.__doc__,
+            **kwargs
+        )
+
+    def run(self, query: str, **kwargs) -> str:
+        \"\"\"Process the user query using available tools.\"\"\"
+        messages = [
+            {{"role": "system", "content": self.description}},
+            {{"role": "user", "content": query}}
+        ]
+        response = self.model(messages)
+        return response.content if hasattr(response, 'content') else str(response)
+"""
+        
+        with open(agent_dir / "agent.py", "w") as f:
+            f.write(agent_code)
+
+        # Create main __init__.py
+        with open(agent_dir / "__init__.py", "w") as f:
+            f.write(f"from .agent import {agent_name}\n")
+            f.write("from .tools import *\n")
+
+        # Create requirements.txt
+        with open(agent_dir / "requirements.txt", "w") as f:
+            f.write("smolagents>=1.2.2\n")
+
+        return str(agent_dir)
+
+    def forward(self, description: str, save_path: str, agent_name: Optional[str] = None) -> str:
+        return self._create_agent(description, save_path, agent_name)
+
+class ToolGenerationTool(Tool):
+    """Tool for generating agent tools."""
+    
+    name = "tool_generator"
+    description = "Generates tools for an agent based on requirements"
+    inputs = {
+        "description": {
+            "type": "string",
+            "description": "Description of the agent's requirements"
+        }
+    }
+    output_type = "list"  # Returns list of tool specifications
+
+    def forward(self, description: str) -> List[Dict]:
+        """Generate tool specifications based on description."""
+        messages = [
+            {"role": "system", "content": "You are an AI that creates tool specifications for agents."},
+            {"role": "user", "content": f"""
+Create tool specifications for an agent that: {description}
+Include the actual Python implementation code for each tool.
+Return a list of dictionaries with 'name', 'description', 'inputs', 'output_type', and 'implementation'.
+            """}
+        ]
+        
+        response = self.model(messages)
+        tool_specs = eval(response.content)
+        return tool_specs
 
 class DynamicAgentGenerator(CodeAgent):
     """An agent that generates new smolagents agents based on user requirements."""
@@ -13,70 +163,15 @@ class DynamicAgentGenerator(CodeAgent):
         output_dir: Optional[str] = None,
         **kwargs
     ):
-        """Initialize the DynamicAgentGenerator.
+        self.agent_creator = AgentCreationTool()
+        self.tool_generator = ToolGenerationTool()
         
-        Args:
-            model_id: The HuggingFace model ID to use for generation
-            output_dir: Directory where generated agents will be saved
-            **kwargs: Additional arguments passed to CodeAgent
-        """
         super().__init__(
-            tools=[],
+            tools=[self.agent_creator, self.tool_generator],
             model=HfApiModel(model_id=model_id),
             **kwargs
         )
         self.output_dir = output_dir or os.getcwd()
-
-    def _get_completion(self, prompt: str) -> str:
-        """Helper method to get completion from the model."""
-        messages = [
-            {"role": "system", "content": "You are a helpful AI assistant that generates code and specifications."},
-            {"role": "user", "content": prompt}
-        ]
-        response = self.model(messages)
-        # Extract content from ChatCompletionOutputMessage
-        return response.content.strip() if hasattr(response, 'content') else str(response).strip()
-
-    def _determine_required_tools(self, description: str) -> List[Dict]:
-        """Use LLM to determine required tools based on agent description."""
-        prompt = f"""Based on the following agent description, determine the necessary tools needed.
-        Return only the Python list of dictionaries, nothing else.
-        
-        Agent Description: {description}
-        
-        The tools should be in this exact format:
-        [
-            {{
-                "name": "tool_name",
-                "description": "what the tool does",
-                "inputs": {{"param_name": {{"type": "type", "description": "param description"}}}},
-                "output_type": "return_type"
-            }}
-        ]
-        """
-        
-        response = self._get_completion(prompt)
-        try:
-            # Safely evaluate the response to get the list of tools
-            tools = eval(response)
-            if not isinstance(tools, list):
-                raise ValueError("Response must be a list of tool specifications")
-            return tools
-        except Exception as e:
-            # Fallback to default tools if parsing fails
-            print(f"Warning: Failed to parse LLM response: {e}")
-            return self._get_default_tools(description)
-
-    def _get_default_tools(self, description: str) -> List[Dict]:
-        """Provide default tools if LLM parsing fails."""
-        return [{
-            "name": "default_tool",
-            "description": "Default tool for basic operations",
-            "inputs": {
-                "input": {"type": "string", "description": "Input to process"}
-            },
-            "output_type": "string"
-        }]
 
     def create_agent(
         self,
@@ -84,92 +179,19 @@ class DynamicAgentGenerator(CodeAgent):
         save_path: str,
         agent_name: Optional[str] = None
     ) -> str:
-        """Create a new agent based on natural language description.
+        """Create a new agent using the tools."""
+        # First, generate the tools needed for the agent
+        tool_specs = self.tool_generator(description=description)
         
-        Args:
-            description: Natural language description of what the agent should do
-            save_path: Where to save the generated agent
-            agent_name: Optional name for the agent (will be generated if not provided)
-            
-        Returns:
-            Path to the generated agent
-        """
-        # Generate agent name if not provided
-        if agent_name is None:
-            prompt = "Generate a single camelCase word to name an agent with this description: " + description
-            try:
-                agent_name = self._get_completion(prompt)
-                if not agent_name.isidentifier():
-                    raise ValueError("Invalid identifier")
-            except:
-                agent_name = "CustomAgent"
-        
-        # Determine required tools using LLM
-        required_tools = self._determine_required_tools(description)
-        
-        # Create output directory
-        agent_dir = Path(save_path) / agent_name
-        agent_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Create tools directory
-        tools_dir = agent_dir / "tools"
-        tools_dir.mkdir(exist_ok=True)
-        
-        # Generate tools
-        tool_paths = []
-        for tool_spec in required_tools:
-            self._validate_tool_spec(tool_spec)
-            
-            tool_code = generate_tool_code(
-                tool_spec["name"],
-                tool_spec["description"],
-                tool_spec["inputs"],
-                tool_spec["output_type"]
-            )
-            
-            tool_path = tools_dir / f"{tool_spec['name']}.py"
-            tool_paths.append(tool_path)
-            
-            with open(tool_path, "w") as f:
-                f.write(tool_code)
-        
-        # Create tools/__init__.py
-        with open(tools_dir / "__init__.py", "w") as f:
-            for tool_spec in required_tools:
-                f.write(f"from .{tool_spec['name']} import {tool_spec['name'].title()}Tool\n")
-                
-        # Generate agent code
-        agent_code = generate_agent_code(
-            agent_name,
-            description,
-            tool_paths
+        # Then create the agent with the generated tools
+        agent_path = self.agent_creator(
+            description=description,
+            save_path=save_path,
+            agent_name=agent_name
         )
         
-        agent_path = agent_dir / "agent.py"
-        with open(agent_path, "w") as f:
-            f.write(agent_code)
-            
-        # Create main __init__.py
-        with open(agent_dir / "__init__.py", "w") as f:
-            f.write(f"from .agent import {agent_name}\n")
-            f.write(f"from .tools import *\n")
-            
-        # Create requirements.txt
-        with open(agent_dir / "requirements.txt", "w") as f:
-            f.write("smolagents>=1.2.2\n")
-            
-        return str(agent_dir)
+        return agent_path
 
-    def _validate_tool_spec(self, tool_spec: Dict) -> None:
-        """Validate tool specification."""
-        required_fields = ["name", "description", "inputs", "output_type"]
-        for field in required_fields:
-            if field not in tool_spec:
-                raise ValueError(f"Tool specification missing required field: {field}")
-        
-        if not isinstance(tool_spec["inputs"], dict):
-            raise ValueError("Tool inputs must be a dictionary")
-
-    def improve_agent(self, agent_path: str, feedback: str) -> str:
-        """Improve an existing agent based on feedback."""
-        raise NotImplementedError("Agent improvement not yet implemented") 
+    def run(self, **kwargs) -> str:
+        """Run the agent generator with the given inputs."""
+        return self.create_agent(**kwargs) 
