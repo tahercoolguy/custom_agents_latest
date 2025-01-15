@@ -138,7 +138,7 @@ class ToolGenerationTool(Tool):
             "description": "Description of the agent's requirements"
         }
     }
-    output_type = "list"  # Returns list of tool specifications
+    output_type = "json"  # Changed from "list" to "json" which is an authorized type
 
     def forward(self, description: str) -> List[Dict]:
         """Generate tool specifications based on description."""
