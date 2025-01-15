@@ -26,7 +26,8 @@ class AgentCreationTool(Tool):
     output_type = "string"
 
     def __init__(self, model=None, **kwargs):
-        super().__init__(model=model, **kwargs)
+        self.model = model  # Set model before super().__init__
+        super().__init__(**kwargs)
         self.tool_generator = None  # Will be set by DynamicAgentGenerator
 
     def _create_agent(self, description: str, save_path: str, agent_name: Optional[str] = None) -> str:
@@ -145,7 +146,8 @@ class ToolGenerationTool(Tool):
     output_type = "object"
 
     def __init__(self, model=None, **kwargs):
-        super().__init__(model=model, **kwargs)
+        self.model = model  # Set model before super().__init__
+        super().__init__(**kwargs)
 
     def forward(self, description: str) -> List[Dict]:
         """Generate tool specifications based on description."""
@@ -177,6 +179,9 @@ class DynamicAgentGenerator(CodeAgent):
         # Initialize tools with the model
         self.agent_creator = AgentCreationTool(model=model)
         self.tool_generator = ToolGenerationTool(model=model)
+        
+        # Set up tool references
+        self.agent_creator.tool_generator = self.tool_generator
         
         super().__init__(
             tools=[self.agent_creator, self.tool_generator],
