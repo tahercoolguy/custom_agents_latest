@@ -142,7 +142,7 @@ class ToolGenerationTool(Tool):
             "description": "Description of the agent's requirements"
         }
     }
-    output_type = "json"
+    output_type = "object"
 
     def __init__(self, model=None, **kwargs):
         super().__init__(model=model, **kwargs)
