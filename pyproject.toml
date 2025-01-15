@@ -1,0 +1,14 @@
+[build-system]
+requires = ["setuptools>=45", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dynamic-agent-generator"
+version = "0.1.0"
+description = "A tool for dynamically generating smolagents agents"
+readme = "README.md"
+requires-python = ">=3.8"
+license = {file = "LICENSE"}
+dependencies = [
+    "smolagents>=1.2.2",
+] 

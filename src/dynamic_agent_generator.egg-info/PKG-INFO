@@ -1,0 +1,8 @@
+Metadata-Version: 2.2
+Name: dynamic-agent-generator
+Version: 0.1.0
+Summary: A tool for dynamically generating smolagents agents
+Requires-Python: >=3.8
+Description-Content-Type: text/markdown
+Requires-Dist: smolagents>=1.2.2
+Dynamic: requires-python
