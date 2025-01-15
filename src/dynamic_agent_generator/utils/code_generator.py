@@ -1,7 +1,5 @@
 from typing import Dict, List
 from pathlib import Path
-import inspect
-from ..templates import agent_template, tool_template
 
 def generate_tool_code(
     name: str,
