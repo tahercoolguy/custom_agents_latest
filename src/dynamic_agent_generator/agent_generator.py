@@ -144,7 +144,7 @@ class ToolGenerationTool(Tool):
     """Tool for generating agent tools."""
     
     name = "tool_generator"
-    description = "Generates tools for an agent based on requirements"
+    description = "Generates tool specifications based on agent requirements"
     inputs = {
         "description": {
             "type": "string",
@@ -152,10 +152,6 @@ class ToolGenerationTool(Tool):
         }
     }
     output_type = "object"
-
-    def __init__(self, model=None, **kwargs):
-        self.model = model
-        super().__init__(**kwargs)
 
     def forward(self, description: str) -> List[Dict]:
         """Generate tool specifications based on description."""
@@ -172,68 +168,20 @@ class ToolGenerationTool(Tool):
             },
             {
                 "role": "user",
-                "content": f"""Create tools for an agent that: {description}
-
-Example format:
-[
-    {{
-        "name": "example_tool",
-        "description": "What this tool does",
-        "inputs": {{"input_name": {{"type": "string", "description": "what this input does"}}}},
-        "output_type": "string",
-        "implementation": "# Python code here\\nreturn processed_result"
-    }}
-]"""
+                "content": f"Create tools for an agent that: {description}"
             }
         ]
         
-        max_retries = 3
-        last_error = None
-        
-        for attempt in range(max_retries):
-            logger.info(f"Attempt {attempt + 1}/{max_retries}")
-            try:
-                logger.info("Getting response from model...")
-                response = self.model(messages)
-                logger.debug(f"Raw model response: {response.content}")
-                
-                logger.info("Evaluating response...")
-                tool_specs = eval(response.content)
-                
-                # Validate response format
-                logger.info("Validating response format...")
-                if not isinstance(tool_specs, list):
-                    raise ValueError("Response must be a list")
-                
-                required_keys = {'name', 'description', 'inputs', 'output_type', 'implementation'}
-                for i, tool in enumerate(tool_specs):
-                    logger.info(f"Validating tool {i + 1}/{len(tool_specs)}")
-                    if not isinstance(tool, dict):
-                        raise ValueError(f"Tool {i + 1} must be a dictionary")
-                    if not all(key in tool for key in required_keys):
-                        missing_keys = required_keys - set(tool.keys())
-                        raise ValueError(f"Tool {i + 1} missing required keys: {missing_keys}")
-                
-                logger.info(f"Successfully generated {len(tool_specs)} tools")
-                return tool_specs
-                
-            except Exception as e:
-                last_error = e
-                logger.error(f"Attempt {attempt + 1} failed with error: {str(e)}")
-                if attempt < max_retries - 1:
-                    logger.info("Adding error context for next attempt...")
-                    messages.append({
-                        "role": "user",
-                        "content": f"""Previous attempt failed with error: {str(e)}
-                        Please try again and ensure you return a valid Python list of tool specifications.
-                        Remember to only return the Python list, no other text."""
-                    })
-                continue
-        
-        logger.warning(f"Failed to generate tools after {max_retries} attempts. Last error: {last_error}")
-        logger.info("Using fallback calculator tool")
-        
-        # Fallback to basic calculator tool if all retries fail
+        try:
+            response = self.model(messages)
+            tool_specs = eval(response.content)
+            return tool_specs
+        except Exception as e:
+            logger.error(f"Failed to generate tools: {e}")
+            return self._get_fallback_tool()
+
+    def _get_fallback_tool(self) -> List[Dict]:
+        """Get a fallback tool if generation fails."""
         return [{
             "name": "calculator",
             "description": "Performs basic mathematical calculations",
@@ -246,7 +194,6 @@ Example format:
             "output_type": "string",
             "implementation": """
                 try:
-                    # Safely evaluate the mathematical expression
                     result = eval(kwargs['expression'], {"__builtins__": {}}, {})
                     return str(result)
                 except Exception as e:
@@ -266,14 +213,16 @@ class DynamicAgentGenerator(CodeAgent):
         # Create model instance
         model = HfApiModel(model_id=model_id)
         
-        # Initialize tools with the model
-        tools = [
-            AgentCreationTool(model=model),
-            ToolGenerationTool(model=model)
-        ]
+        # Create tools
+        agent_creator = AgentCreationTool(model=model)
+        tool_generator = ToolGenerationTool(model=model)
         
+        # Set up tool reference
+        agent_creator.tool_generator = tool_generator
+        
+        # Initialize CodeAgent with tools
         super().__init__(
-            tools=tools,
+            tools=[agent_creator, tool_generator],
             model=model,
             **kwargs
         )
@@ -284,10 +233,13 @@ class DynamicAgentGenerator(CodeAgent):
         if save_path is None:
             save_path = self.output_dir
             
-        prompt = f"""Create an agent with these requirements: {description}
-        The agent should be saved to: {save_path}
+        # First, get the tools using tool_generator
+        tool_specs = self.run(f"""Use tool_generator to create tools for this agent: {description}
+        Return only the tool specifications.""")
         
-        First use tool_generator to create the tools, then use agent_creator to create the agent with those tools.
-        """
+        # Then create the agent with those tools
+        agent_path = self.run(f"""Use agent_creator to create an agent with these requirements:
+        Description: {description}
+        Save path: {save_path}""")
         
-        return self.run(prompt) 
+        return agent_path 
