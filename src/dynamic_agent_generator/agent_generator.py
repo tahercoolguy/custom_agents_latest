@@ -19,7 +19,8 @@ class AgentCreationTool(Tool):
         },
         "agent_name": {
             "type": "string",
-            "description": "Optional name for the agent"
+            "description": "Optional name for the agent",
+            "nullable": True
         }
     }
     output_type = "string"
