@@ -29,17 +29,21 @@ class DynamicAgentGenerator(CodeAgent):
 
     def _get_completion(self, prompt: str) -> str:
         """Helper method to get completion from the model."""
-        response = self.model(prompt)
+        messages = [
+            {"role": "system", "content": "You are a helpful AI assistant that generates code and specifications."},
+            {"role": "user", "content": prompt}
+        ]
+        response = self.model(messages)
         return response.strip()
 
     def _determine_required_tools(self, description: str) -> List[Dict]:
         """Use LLM to determine required tools based on agent description."""
         prompt = f"""Based on the following agent description, determine the necessary tools needed.
-        Return the tools as a Python list of dictionaries with 'name', 'description', 'inputs', and 'output_type'.
+        Return only the Python list of dictionaries, nothing else.
         
         Agent Description: {description}
         
-        Example format:
+        The tools should be in this exact format:
         [
             {{
                 "name": "tool_name",
@@ -58,7 +62,20 @@ class DynamicAgentGenerator(CodeAgent):
                 raise ValueError("Response must be a list of tool specifications")
             return tools
         except Exception as e:
-            raise ValueError(f"Failed to parse LLM response: {e}")
+            # Fallback to default tools if parsing fails
+            print(f"Warning: Failed to parse LLM response: {e}")
+            return self._get_default_tools(description)
+
+    def _get_default_tools(self, description: str) -> List[Dict]:
+        """Provide default tools if LLM parsing fails."""
+        return [{
+            "name": "default_tool",
+            "description": "Default tool for basic operations",
+            "inputs": {
+                "input": {"type": "string", "description": "Input to process"}
+            },
+            "output_type": "string"
+        }]
 
     def create_agent(
         self,
@@ -78,9 +95,12 @@ class DynamicAgentGenerator(CodeAgent):
         """
         # Generate agent name if not provided
         if agent_name is None:
-            prompt = f"Generate a concise camelCase name for an agent that: {description}"
-            agent_name = self._get_completion(prompt)
-            if not agent_name.isidentifier():
+            prompt = "Generate a single camelCase word to name an agent with this description: " + description
+            try:
+                agent_name = self._get_completion(prompt)
+                if not agent_name.isidentifier():
+                    raise ValueError("Invalid identifier")
+            except:
                 agent_name = "CustomAgent"
         
         # Determine required tools using LLM
